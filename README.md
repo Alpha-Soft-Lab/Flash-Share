@@ -9,20 +9,22 @@
 ![PWA](https://img.shields.io/badge/PWA-5A0FC8?logo=pwa\&logoColor=white)
 ![Render](https://img.shields.io/badge/Render-FF4F00?logo=render\&logoColor=white)
 
-**FlashShare** is a fast, privacy-focused **peer-to-peer file sharing PWA** inspired by Quick Share. It uses **WebRTC** to transfer files directly between devices without uploading them to a cloud server.
+**FlashShare** is a fast, privacy-focused **peer-to-peer file sharing PWA** built for direct file transfers between devices using **WebRTC**.
+
+FlashShare does **not require nearby-device discovery or the same Wi-Fi network**. Devices can communicate across different networks, such as Wi-Fi and mobile data, when a WebRTC connection can be established.
 
 ### 🚀 Features
 
-* ⚡ **Fast P2P File Sharing** — Direct device-to-device transfers using WebRTC
+* ⚡ **Fast P2P File Sharing** — Direct device-to-device file transfers using WebRTC
 * 🔒 **Privacy First** — Files are transferred directly between peers
-* 🌐 **Works Across Different Networks** — Devices don't need to be connected to the same Wi-Fi
-* 📱 **No Nearby Device Requirement** — No Bluetooth or nearby-device discovery required
-* 💾 **Large File Support** — Designed for efficient chunk-based file transfers
-* 📊 **Transfer Progress** — Track upload and download progress
-* 📲 **PWA Support** — Install and use FlashShare like a native app
+* 🌐 **Different Networks** — Sender and receiver don't need to use the same Wi-Fi
+* 📱 **No Nearby Requirement** — No nearby-device discovery is required
+* 📦 **Chunk-Based Transfer** — Files are transferred in manageable chunks
+* 📊 **Transfer Progress** — Track sending and receiving progress
+* 📲 **PWA Support** — Install FlashShare like a native application
 * 🖥️ **Cross-Platform** — Works on phones, laptops, and desktops
 * 🧩 **No MongoDB Required** — No database is required
-* 🔌 **Local Development Ready** — Clone the repository and run it locally
+* 🔌 **Simple Setup** — Clone the repository and run the client and server
 
 ### 🛠️ Tech Stack
 
@@ -43,13 +45,21 @@
 
 * 🌐 WebRTC
 * 📡 WebRTC DataChannel
-* 📦 Chunk-based file transfer
+* 📦 Chunk-Based File Transfer
 
 ### 🌍 Network Support
 
-FlashShare is designed to work across different networks.
+FlashShare does **not require** both devices to be on the same network.
 
-You **don't need**:
+For example:
+
+📱 **Phone — Mobile Data**
+↕️
+🌐 **Internet**
+↕️
+💻 **Laptop — Wi-Fi**
+
+You don't need:
 
 ❌ Same Wi-Fi
 ❌ Bluetooth
@@ -57,58 +67,111 @@ You **don't need**:
 ❌ Cloud file storage
 ❌ MongoDB
 
-For example:
+> **Note:** WebRTC connectivity depends on the network/NAT configuration. For reliable connections across restrictive networks, a STUN/TURN server may be required.
 
-📱 Phone using mobile data
-↕️
-🌐 Internet
-↕️
-💻 Laptop using Wi-Fi
+### 🔄 How It Works
 
-> **Note:** Depending on the network/NAT configuration, WebRTC may require a STUN/TURN server for reliable connectivity across different networks.
+1. 👤 Sender opens FlashShare and creates a sharing session.
+2. 👤 Receiver joins the session.
+3. 🔌 Socket.IO handles the signaling required to establish the connection.
+4. 🤝 WebRTC creates a peer-to-peer connection.
+5. 📦 The selected file is divided into chunks.
+6. 🚀 Chunks are transferred through the WebRTC DataChannel.
+7. 💾 The receiver reconstructs the file and downloads it.
 
-### 💻 Run Locally
+The signaling server helps establish the connection. **The actual file data is transferred through WebRTC between the connected peers.**
 
-Clone the repository:
+---
+
+## 💻 Installation
+
+### 1️⃣ Clone the Repository
 
 ```bash
-git clone <Alpha-Soft-Lab/Flash-Share.git>
+git clone https://github.com/Alpha-Soft-Lab/Flash-Share.git
 cd FlashShare
 ```
 
-Install dependencies:
+### 2️⃣ Install Client Dependencies
+
+Go to the `client` folder:
+
+```bash
+cd client
+```
+
+Install the frontend dependencies:
 
 ```bash
 npm install
 ```
 
-Install server dependencies:
+### 3️⃣ Start the Client
 
-```bash
-cd server
-npm install
-```
-
-Start the server:
-
-```bash
-node server
-```
-
-Then start the frontend:
+Run the Vite development server:
 
 ```bash
 npm run dev
 ```
 
+Keep this terminal running.
+
+### 4️⃣ Open a New Terminal
+
+Go back to the project root:
+
+```bash
+cd ..
+```
+
+### 5️⃣ Install Server Dependencies
+
+Go to the `server` folder:
+
+```bash
+cd server
+```
+
+Install the backend dependencies:
+
+```bash
+npm install
+```
+
+### 6️⃣ Start the Server
+
+```bash
+node server
+```
+
+Your FlashShare client and signaling server are now running locally.
+
+### 📁 Project Structure
+
+```text
+FlashShare/
+│
+├── client/              # React + Vite frontend
+│   ├── src/
+│   ├── public/
+│   ├── package.json
+│   └── ...
+│
+├── server/              # Node.js + Express + Socket.IO
+│   ├── package.json
+│   └── ...
+│
+└── README.md
+```
+
 ### 🔐 Privacy
 
-FlashShare is built around **peer-to-peer file transfer**. Files are not stored in a database or uploaded to cloud storage. The signaling server helps establish the WebRTC connection, while the actual file transfer happens directly between peers whenever a direct connection can be established.
+FlashShare is built around **peer-to-peer file transfer**. Files are not stored in MongoDB or uploaded to cloud storage. The signaling server is used to help establish the WebRTC connection, while the actual file transfer takes place between peers whenever a direct connection can be established.
 
 ---
 
-### ⚡ FlashShare
+## ⚡ FlashShare
 
 **Share files. Fast. Direct. Private.**
 
-Built with ❤️ using BY Ashish Devadiga & Alpha Software Lab
+Built with ❤️ using **React + Vite + Tailwind CSS + Node.js + Express + Socket.IO + WebRTC**.
