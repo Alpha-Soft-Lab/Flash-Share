@@ -1,6 +1,9 @@
-export const CHUNK_SIZE = 16 * 1024;
+export const CHUNK_SIZE = 64 * 1024;
 
-export const fileToChunks = async (file, onProgress) => {
+export const fileToChunks = async (
+  file,
+  onProgress
+) => {
   const chunks = [];
 
   let offset = 0;
