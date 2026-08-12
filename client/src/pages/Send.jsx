@@ -11,6 +11,48 @@ import FilePreview from "../components/FilePreview";
 import { socket } from "../services/socket";
 import useWebRTC from "../hooks/useWebRTC";
 
+const formatBytes = (bytes) => {
+  if (!bytes) return "0 B";
+
+  const units = [
+    "B",
+    "KB",
+    "MB",
+    "GB",
+  ];
+
+  const index = Math.floor(
+    Math.log(bytes) / Math.log(1024)
+  );
+
+  return `${(
+    bytes /
+    Math.pow(1024, index)
+  ).toFixed(index === 0 ? 0 : 2)} ${
+    units[index]
+  }`;
+};
+
+const formatTime = (seconds) => {
+  if (!seconds || !Number.isFinite(seconds)) {
+    return "0s";
+  }
+
+  if (seconds < 60) {
+    return `${seconds.toFixed(1)}s`;
+  }
+
+  const minutes = Math.floor(
+    seconds / 60
+  );
+
+  const remainingSeconds = Math.floor(
+    seconds % 60
+  );
+
+  return `${minutes}m ${remainingSeconds}s`;
+};
+
 const Send = () => {
   const navigate = useNavigate();
 
@@ -25,12 +67,18 @@ const Send = () => {
     dataChannelReady,
     createOffer,
     sendFile,
+    sendProgress,
+    sendSpeed,
+    sendBytes,
+    sendElapsed,
   } = useWebRTC({
     roomId,
     isSender: true,
   });
 
-  const handleFilesSelected = (selectedFiles) => {
+  const handleFilesSelected = (
+    selectedFiles
+  ) => {
     setFiles((currentFiles) => [
       ...currentFiles,
       ...selectedFiles,
@@ -41,22 +89,22 @@ const Send = () => {
 
   const removeFile = (index) => {
     setFiles((currentFiles) =>
-      currentFiles.filter((_, i) => i !== index)
+      currentFiles.filter(
+        (_, i) => i !== index
+      )
     );
   };
 
   useEffect(() => {
-    const handlePeerJoined = ({ peerId }) => {
+    const handlePeerJoined = ({
+      peerId,
+    }) => {
       console.log(
-        "✅ Receiver joined:",
+        "Receiver joined:",
         peerId
       );
 
       setTimeout(() => {
-        console.log(
-          "📤 Receiver joined. Creating WebRTC offer..."
-        );
-
         createOffer();
       }, 300);
     };
@@ -103,11 +151,6 @@ const Send = () => {
             return;
           }
 
-          console.log(
-            "✅ Room created:",
-            response.roomId
-          );
-
           setRoomId(response.roomId);
         }
       );
@@ -143,20 +186,11 @@ const Send = () => {
 
     try {
       for (const file of files) {
-        console.log(
-          "📤 Sending:",
-          file.name
-        );
-
         await sendFile(file);
       }
-
-      console.log(
-        "✅ All files sent successfully"
-      );
     } catch (error) {
       console.error(
-        "❌ File transfer error:",
+        "File transfer error:",
         error
       );
 
@@ -281,6 +315,68 @@ const Send = () => {
               )}
             </div>
 
+            {sending && (
+              <div className="mt-8 rounded-2xl border border-white/10 bg-black/30 p-5 text-left">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-white/50">
+                    Sending
+                  </span>
+
+                  <span className="text-sm font-semibold">
+                    {sendProgress}%
+                  </span>
+                </div>
+
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="h-full rounded-full bg-white transition-all duration-150"
+                    style={{
+                      width: `${sendProgress}%`,
+                    }}
+                  />
+                </div>
+
+                <div className="mt-4 grid grid-cols-3 gap-3">
+                  <div>
+                    <p className="text-xs text-white/30">
+                      Speed
+                    </p>
+
+                    <p className="mt-1 text-sm font-semibold">
+                      {formatBytes(
+                        sendSpeed
+                      )}
+                      /s
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-white/30">
+                      Transferred
+                    </p>
+
+                    <p className="mt-1 text-sm font-semibold">
+                      {formatBytes(
+                        sendBytes
+                      )}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-white/30">
+                      Time
+                    </p>
+
+                    <p className="mt-1 text-sm font-semibold">
+                      {formatTime(
+                        sendElapsed
+                      )}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {dataChannelReady && (
               <button
                 type="button"
@@ -307,6 +403,33 @@ const Send = () => {
                 )}
               </button>
             )}
+
+            {!sending &&
+              sendProgress === 100 && (
+                <div className="mt-6 rounded-2xl border border-green-500/20 bg-green-500/5 p-4">
+                  <p className="text-sm font-semibold text-green-400">
+                    Transfer complete
+                  </p>
+
+                  <p className="mt-1 text-xs text-white/40">
+                    {formatBytes(
+                      sendBytes
+                    )}{" "}
+                    transferred in{" "}
+                    {formatTime(
+                      sendElapsed
+                    )}
+                  </p>
+
+                  <p className="mt-1 text-xs text-white/40">
+                    Average speed:{" "}
+                    {formatBytes(
+                      sendSpeed
+                    )}
+                    /s
+                  </p>
+                </div>
+              )}
           </div>
         )}
       </div>

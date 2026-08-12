@@ -24,6 +24,7 @@ const Receive = () => {
     connectionState,
     dataChannelReady,
     receiveProgress,
+    receiveSpeed,
     receivedFile,
   } = useWebRTC({
     roomId: joined ? roomId : "",
@@ -41,9 +42,7 @@ const Receive = () => {
 
   const joinRoom = () => {
     if (roomId.length !== 6) {
-      setError(
-        "Enter a valid 6-character room code."
-      );
+      setError("Enter a valid 6-character room code.");
       return;
     }
 
@@ -65,11 +64,6 @@ const Receive = () => {
             return;
           }
 
-          console.log(
-            "✅ Joined room:",
-            roomId
-          );
-
           setJoined(true);
         }
       );
@@ -79,11 +73,7 @@ const Receive = () => {
       handleConnect();
     } else {
       socket.connect();
-
-      socket.once(
-        "connect",
-        handleConnect
-      );
+      socket.once("connect", handleConnect);
     }
   };
 
@@ -101,7 +91,6 @@ const Receive = () => {
   return (
     <main className="min-h-screen bg-black px-6 py-10 text-white">
       <div className="mx-auto max-w-3xl pt-10">
-
         <button
           onClick={() => navigate("/")}
           className="mb-10 flex items-center gap-2 text-sm text-white/40 transition hover:text-white"
@@ -124,7 +113,6 @@ const Receive = () => {
 
         {!joined ? (
           <div className="mt-10">
-
             <input
               type="text"
               value={roomId}
@@ -160,16 +148,13 @@ const Receive = () => {
               ) : (
                 <>
                   Join Room
-                  <ArrowRight
-                    size={18}
-                  />
+                  <ArrowRight size={18} />
                 </>
               )}
             </button>
           </div>
         ) : (
           <div className="mt-10 rounded-3xl border border-white/10 bg-white/[0.04] p-10 text-center">
-
             <h2 className="text-2xl font-semibold">
               Connected
             </h2>
@@ -179,7 +164,6 @@ const Receive = () => {
             </p>
 
             <div className="mt-8 border-t border-white/10 pt-6">
-
               <p className="text-xs uppercase tracking-[0.2em] text-white/30">
                 Connection
               </p>
@@ -188,15 +172,13 @@ const Receive = () => {
                 {connectionState}
               </p>
 
-              {connectionState ===
-                "connecting" && (
+              {connectionState === "connecting" && (
                 <p className="mt-3 text-sm text-white/30">
                   Connecting to sender...
                 </p>
               )}
 
-              {connectionState ===
-                "connected" && (
+              {connectionState === "connected" && (
                 <p className="mt-3 text-sm text-green-400">
                   ✓ WebRTC connection established
                 </p>
@@ -209,11 +191,9 @@ const Receive = () => {
               )}
             </div>
 
-
             {receiveProgress > 0 &&
               receiveProgress < 100 && (
                 <div className="mt-8 border-t border-white/10 pt-6 text-left">
-
                   <div className="flex items-center justify-between">
                     <p className="text-sm text-white/50">
                       Receiving file
@@ -232,19 +212,26 @@ const Receive = () => {
                       }}
                     />
                   </div>
+
+                  {receiveSpeed && (
+                    <div className="mt-4 flex items-center justify-between">
+                      <p className="text-sm text-white/40">
+                        Transfer speed
+                      </p>
+
+                      <p className="text-lg font-semibold text-white">
+                        {receiveSpeed}
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
 
-
             {receivedFile && (
               <div className="mt-8 border-t border-white/10 pt-6">
-
                 <div className="flex flex-col items-center">
-
                   <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/10">
-                    <FileCheck
-                      size={30}
-                    />
+                    <FileCheck size={30} />
                   </div>
 
                   <p className="mt-4 text-sm text-green-400">
@@ -257,21 +244,15 @@ const Receive = () => {
 
                   <button
                     type="button"
-                    onClick={
-                      handleDownload
-                    }
+                    onClick={handleDownload}
                     className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-white px-6 py-4 font-semibold text-black transition hover:bg-white/90"
                   >
-                    <Download
-                      size={18}
-                    />
+                    <Download size={18} />
                     Download File
                   </button>
-
                 </div>
               </div>
             )}
-
           </div>
         )}
       </div>

@@ -17,6 +17,7 @@ export const createPeerConnection = ({
         urls: "stun:stun2.l.google.com:19302",
       },
     ],
+    iceCandidatePoolSize: 10,
   });
 
   peer.onicecandidate = (event) => {
@@ -88,17 +89,6 @@ export const createPeerConnection = ({
     console.log(
       "📡 WebRTC negotiation needed"
     );
-  };
-
-  peer.onicegatheringstatechange = () => {
-    if (
-      peer.iceGatheringState ===
-      "complete"
-    ) {
-      console.log(
-        "🟢 ICE gathering complete"
-      );
-    }
   };
 
   return peer;
