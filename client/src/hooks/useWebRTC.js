@@ -8,9 +8,29 @@ import {
 import { socket } from "../services/socket";
 import { createPeerConnection } from "../services/peer";
 
-const CHUNK_SIZE = 64 * 1024;
+const CHUNK_SIZE = 256 * 1024;
 const HIGH_WATER_MARK = 12 * 1024 * 1024;
 const LOW_WATER_MARK = 4 * 1024 * 1024;
+
+const UI_UPDATE_INTERVAL_MS = 100;
+
+async function chainHash(prevHashBytes, chunkBuffer) {
+  const combined = new Uint8Array(
+    prevHashBytes.length + chunkBuffer.byteLength
+  );
+  combined.set(prevHashBytes, 0);
+  combined.set(new Uint8Array(chunkBuffer), prevHashBytes.length);
+  const digest = await crypto.subtle.digest("SHA-256", combined);
+  return new Uint8Array(digest);
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+const ZERO_HASH = new Uint8Array(32);
 
 const useWebRTC = ({ roomId, isSender }) => {
   const peerRef = useRef(null);
@@ -21,38 +41,65 @@ const useWebRTC = ({ roomId, isSender }) => {
   const receiveBytesRef = useRef(0);
   const receiveProgressTimerRef = useRef(null);
   const receiveStartTimeRef = useRef(null);
-  const receiveLastBytesRef = useRef(0);
-  const receiveLastTimeRef = useRef(0);
 
   const iceCandidatesQueueRef = useRef([]);
   const remoteDescriptionSetRef = useRef(false);
 
-  const [connectionState, setConnectionState] =
-    useState("new");
+  const saveDirHandleRef = useRef(null);
+  const writableStreamPromiseRef = useRef(null);
+  const writeChainRef = useRef(Promise.resolve());
 
-  const [dataChannelReady, setDataChannelReady] =
-    useState(false);
+  const receiveHashChainRef = useRef(Promise.resolve(ZERO_HASH));
+  const sendHashChainRef = useRef(Promise.resolve(ZERO_HASH));
 
-  const [receiveProgress, setReceiveProgress] =
-    useState(0);
+  const [connectionState, setConnectionState] = useState("new");
+  const [dataChannelReady, setDataChannelReady] = useState(false);
+  const [receiveProgress, setReceiveProgress] = useState(0);
+  const [receiveSpeed, setReceiveSpeed] = useState(0);
+  const [receivedFile, setReceivedFile] = useState(null);
+  const [receiveSavedToDisk, setReceiveSavedToDisk] = useState(false);
+  const [receiveIntegrity, setReceiveIntegrity] = useState(null);
+  const [canSaveToDisk, setCanSaveToDisk] = useState(
+    typeof window !== "undefined" && "showDirectoryPicker" in window
+  );
+  const [sendProgress, setSendProgress] = useState(0);
+  const [sendSpeed, setSendSpeed] = useState(0);
+  const [sendBytes, setSendBytes] = useState(0);
+  const [sendElapsed, setSendElapsed] = useState(0);
 
-  const [receiveSpeed, setReceiveSpeed] =
-    useState(0);
+  const chooseSaveDirectory = useCallback(async () => {
+    if (!("showDirectoryPicker" in window)) {
+      setCanSaveToDisk(false);
+      return false;
+    }
 
-  const [receivedFile, setReceivedFile] =
-    useState(null);
+    try {
+      const handle = await window.showDirectoryPicker({
+        mode: "readwrite",
+      });
 
-  const [sendProgress, setSendProgress] =
-    useState(0);
+      saveDirHandleRef.current = handle;
+      return true;
+    } catch (error) {
+      console.error("Directory picker error:", error);
+      return false;
+    }
+  }, []);
 
-  const [sendSpeed, setSendSpeed] =
-    useState(0);
+  const resetReceiveState = useCallback(() => {
+    receiveChunksRef.current = [];
+    receiveFileRef.current = null;
+    receiveBytesRef.current = 0;
+    receiveStartTimeRef.current = null;
+    writableStreamPromiseRef.current = null;
+    writeChainRef.current = Promise.resolve();
+    receiveHashChainRef.current = Promise.resolve(ZERO_HASH);
 
-  const [sendBytes, setSendBytes] =
-    useState(0);
-
-  const [sendElapsed, setSendElapsed] =
-    useState(0);
+    if (receiveProgressTimerRef.current) {
+      clearTimeout(receiveProgressTimerRef.current);
+      receiveProgressTimerRef.current = null;
+    }
+  }, []);
 
   const setupDataChannel = useCallback(
     (channel) => {
@@ -60,9 +107,7 @@ const useWebRTC = ({ roomId, isSender }) => {
 
       channelRef.current = channel;
       channel.binaryType = "arraybuffer";
-
-      channel.bufferedAmountLowThreshold =
-        LOW_WATER_MARK;
+      channel.bufferedAmountLowThreshold = LOW_WATER_MARK;
 
       channel.onopen = () => {
         setDataChannelReady(true);
@@ -73,11 +118,7 @@ const useWebRTC = ({ roomId, isSender }) => {
       };
 
       channel.onerror = (error) => {
-        console.error(
-          "DataChannel error:",
-          error
-        );
-
+        console.error("DataChannel error:", error);
         setDataChannelReady(false);
       };
 
@@ -91,67 +132,93 @@ const useWebRTC = ({ roomId, isSender }) => {
             const message = JSON.parse(data);
 
             if (message.type === "file-start") {
-              receiveChunksRef.current = [];
+              resetReceiveState();
 
               receiveFileRef.current = {
                 name: message.name,
-                type:
-                  message.mimeType ||
-                  "application/octet-stream",
+                type: message.mimeType || "application/octet-stream",
                 size: message.size,
               };
 
               receiveBytesRef.current = 0;
-
-              receiveStartTimeRef.current =
-                performance.now();
-
-              receiveLastBytesRef.current = 0;
-
-              receiveLastTimeRef.current =
-                performance.now();
+              receiveStartTimeRef.current = performance.now();
 
               setReceiveProgress(0);
               setReceiveSpeed(0);
               setReceivedFile(null);
+              setReceiveSavedToDisk(false);
+              setReceiveIntegrity(null);
+
+              if (saveDirHandleRef.current) {
+                writableStreamPromiseRef.current = (async () => {
+                  try {
+                    const fileHandle =
+                      await saveDirHandleRef.current.getFileHandle(
+                        message.name,
+                        { create: true }
+                      );
+
+                    const writable = await fileHandle.createWritable();
+                    return writable;
+                  } catch (error) {
+                    console.error(
+                      "Could not open file for streaming write, falling back to in-memory buffering:",
+                      error
+                    );
+                    return null;
+                  }
+                })();
+              } else {
+                writableStreamPromiseRef.current = Promise.resolve(null);
+              }
 
               return;
             }
 
             if (message.type === "file-end") {
-              const fileInfo =
-                receiveFileRef.current;
+              const fileInfo = receiveFileRef.current;
 
               if (!fileInfo) return;
+              if (receiveBytesRef.current < fileInfo.size) return;
 
-              if (
-                receiveBytesRef.current <
-                fileInfo.size
-              ) {
-                return;
-              }
+              (async () => {
+                await writeChainRef.current;
 
-              const blob = new Blob(
-                receiveChunksRef.current,
-                {
-                  type: fileInfo.type,
+                const writable = await writableStreamPromiseRef.current;
+
+                if (writable) {
+                  await writable.close();
+                  setReceiveSavedToDisk(true);
+                  setReceivedFile(null);
+                } else {
+                  const blob = new Blob(receiveChunksRef.current, {
+                    type: fileInfo.type,
+                  });
+
+                  setReceivedFile({
+                    blob,
+                    name: fileInfo.name,
+                  });
+
+                  setReceiveSavedToDisk(false);
                 }
-              );
 
-              setReceivedFile({
-                blob,
-                name: fileInfo.name,
-              });
+                const finalHash = await receiveHashChainRef.current;
+                const finalHex = bytesToHex(finalHash);
 
-              setReceiveProgress(100);
-              setReceiveSpeed(0);
+                if (message.hash) {
+                  setReceiveIntegrity(
+                    finalHex === message.hash ? "verified" : "failed"
+                  );
+                } else {
+                  setReceiveIntegrity(null);
+                }
 
-              receiveChunksRef.current = [];
-              receiveFileRef.current = null;
-              receiveBytesRef.current = 0;
-              receiveStartTimeRef.current = null;
-              receiveLastBytesRef.current = 0;
-              receiveLastTimeRef.current = 0;
+                setReceiveProgress(100);
+                setReceiveSpeed(0);
+
+                resetReceiveState();
+              })();
 
               return;
             }
@@ -162,69 +229,55 @@ const useWebRTC = ({ roomId, isSender }) => {
           return;
         }
 
+        let buffer;
+
         if (data instanceof ArrayBuffer) {
-          receiveChunksRef.current.push(data);
-
-          receiveBytesRef.current +=
-            data.byteLength;
-        } else if (data instanceof Blob) {
-          receiveChunksRef.current.push(data);
-
-          receiveBytesRef.current +=
-            data.size;
+          buffer = data;
         } else {
           return;
         }
 
-        const fileInfo =
-          receiveFileRef.current;
+        receiveBytesRef.current += buffer.byteLength;
 
-        if (
-          fileInfo &&
-          fileInfo.size > 0
-        ) {
-          const now = performance.now();
+        writeChainRef.current = writeChainRef.current.then(async () => {
+          const writable = await writableStreamPromiseRef.current;
 
-          const elapsed =
-            (now -
-              receiveStartTimeRef.current) /
-            1000;
-
-          if (elapsed > 0) {
-            const speed =
-              receiveBytesRef.current /
-              elapsed;
-
-            setReceiveSpeed(speed);
+          if (writable) {
+            await writable.write(buffer);
+          } else {
+            receiveChunksRef.current.push(buffer);
           }
+        });
 
-          if (
-            !receiveProgressTimerRef.current
-          ) {
-            receiveProgressTimerRef.current =
-              setTimeout(() => {
-                const progress =
-                  Math.min(
-                    100,
-                    Math.round(
-                      (receiveBytesRef.current /
-                        fileInfo.size) *
-                        100
-                    )
-                  );
+        receiveHashChainRef.current = receiveHashChainRef.current.then(
+          (prevHash) => chainHash(prevHash, buffer)
+        );
 
-                setReceiveProgress(
-                  progress
-                );
+        const fileInfo = receiveFileRef.current;
 
-                receiveProgressTimerRef.current =
-                  null;
-              }, 100);
+        if (fileInfo && fileInfo.size > 0) {
+          if (!receiveProgressTimerRef.current) {
+            receiveProgressTimerRef.current = setTimeout(() => {
+              const bytesNow = receiveBytesRef.current;
+
+              const progress = Math.min(
+                100,
+                Math.round((bytesNow / fileInfo.size) * 100)
+              );
+
+              const elapsed =
+                (performance.now() - receiveStartTimeRef.current) / 1000;
+
+              setReceiveProgress(progress);
+              setReceiveSpeed(elapsed > 0 ? bytesNow / elapsed : 0);
+
+              receiveProgressTimerRef.current = null;
+            }, UI_UPDATE_INTERVAL_MS);
           }
         }
       };
     },
-    [isSender]
+    [isSender, resetReceiveState]
   );
 
   useEffect(() => {
@@ -233,191 +286,103 @@ const useWebRTC = ({ roomId, isSender }) => {
     remoteDescriptionSetRef.current = false;
     iceCandidatesQueueRef.current = [];
 
-    const handleOffer = async ({
-      offer,
-    }) => {
+    const handleOffer = async ({ offer }) => {
       if (isSender) return;
 
       try {
         const peer = peerRef.current;
-
         if (!peer) return;
 
-        await peer.setRemoteDescription(
-          new RTCSessionDescription(offer)
-        );
+        await peer.setRemoteDescription(new RTCSessionDescription(offer));
+        remoteDescriptionSetRef.current = true;
 
-        remoteDescriptionSetRef.current =
-          true;
-
-        for (
-          const candidate of
-          iceCandidatesQueueRef.current
-        ) {
+        for (const candidate of iceCandidatesQueueRef.current) {
           try {
-            await peer.addIceCandidate(
-              new RTCIceCandidate(candidate)
-            );
+            await peer.addIceCandidate(new RTCIceCandidate(candidate));
           } catch {}
         }
 
         iceCandidatesQueueRef.current = [];
 
-        const answer =
-          await peer.createAnswer();
+        const answer = await peer.createAnswer();
+        await peer.setLocalDescription(answer);
 
-        await peer.setLocalDescription(
-          answer
-        );
-
-        socket.emit(
-          "webrtc-answer",
-          {
-            roomId,
-            answer,
-          }
-        );
+        socket.emit("webrtc-answer", { roomId, answer });
       } catch (error) {
-        console.error(
-          "WebRTC offer error:",
-          error
-        );
+        console.error("WebRTC offer error:", error);
       }
     };
 
-    const handleAnswer = async ({
-      answer,
-    }) => {
+    const handleAnswer = async ({ answer }) => {
       if (!isSender) return;
 
       try {
         const peer = peerRef.current;
-
         if (!peer) return;
 
-        await peer.setRemoteDescription(
-          new RTCSessionDescription(answer)
-        );
+        await peer.setRemoteDescription(new RTCSessionDescription(answer));
+        remoteDescriptionSetRef.current = true;
 
-        remoteDescriptionSetRef.current =
-          true;
-
-        for (
-          const candidate of
-          iceCandidatesQueueRef.current
-        ) {
+        for (const candidate of iceCandidatesQueueRef.current) {
           try {
-            await peer.addIceCandidate(
-              new RTCIceCandidate(candidate)
-            );
+            await peer.addIceCandidate(new RTCIceCandidate(candidate));
           } catch {}
         }
 
         iceCandidatesQueueRef.current = [];
       } catch (error) {
-        console.error(
-          "WebRTC answer error:",
-          error
-        );
+        console.error("WebRTC answer error:", error);
       }
     };
 
-    const handleIceCandidate = async ({
-      candidate,
-    }) => {
+    const handleIceCandidate = async ({ candidate }) => {
       if (!candidate) return;
 
-      if (
-        !remoteDescriptionSetRef.current
-      ) {
-        iceCandidatesQueueRef.current.push(
-          candidate
-        );
-
+      if (!remoteDescriptionSetRef.current) {
+        iceCandidatesQueueRef.current.push(candidate);
         return;
       }
 
       const peer = peerRef.current;
-
       if (!peer) return;
 
       try {
-        await peer.addIceCandidate(
-          new RTCIceCandidate(candidate)
-        );
+        await peer.addIceCandidate(new RTCIceCandidate(candidate));
       } catch {}
     };
 
-    socket.on(
-      "webrtc-offer",
-      handleOffer
-    );
+    socket.on("webrtc-offer", handleOffer);
+    socket.on("webrtc-answer", handleAnswer);
+    socket.on("ice-candidate", handleIceCandidate);
 
-    socket.on(
-      "webrtc-answer",
-      handleAnswer
-    );
-
-    socket.on(
-      "ice-candidate",
-      handleIceCandidate
-    );
-
-    const peer =
-      createPeerConnection({
-        socket,
-        roomId,
-        isSender,
-        onDataChannel: (channel) => {
-          setupDataChannel(channel);
-        },
-        onConnectionStateChange: (
-          state
-        ) => {
-          setConnectionState(state);
-        },
-      });
+    const peer = createPeerConnection({
+      socket,
+      roomId,
+      isSender,
+      onDataChannel: (channel) => {
+        setupDataChannel(channel);
+      },
+      onConnectionStateChange: (state) => {
+        setConnectionState(state);
+      },
+    });
 
     peerRef.current = peer;
 
     if (isSender) {
-      const channel =
-        peer.createDataChannel(
-          "file-transfer",
-          {
-            ordered: true,
-          }
-        );
+      const channel = peer.createDataChannel("file-transfer", {
+        ordered: true,
+      });
 
       setupDataChannel(channel);
     }
 
     return () => {
-      socket.off(
-        "webrtc-offer",
-        handleOffer
-      );
+      socket.off("webrtc-offer", handleOffer);
+      socket.off("webrtc-answer", handleAnswer);
+      socket.off("ice-candidate", handleIceCandidate);
 
-      socket.off(
-        "webrtc-answer",
-        handleAnswer
-      );
-
-      socket.off(
-        "ice-candidate",
-        handleIceCandidate
-      );
-
-      if (
-        receiveProgressTimerRef.current
-      ) {
-        clearTimeout(
-          receiveProgressTimerRef.current
-        );
-
-        receiveProgressTimerRef.current =
-          null;
-      }
+      resetReceiveState();
 
       if (peerRef.current) {
         peerRef.current.close();
@@ -426,178 +391,88 @@ const useWebRTC = ({ roomId, isSender }) => {
       peerRef.current = null;
       channelRef.current = null;
 
-      receiveChunksRef.current = [];
-      receiveFileRef.current = null;
-      receiveBytesRef.current = 0;
-      receiveStartTimeRef.current = null;
-      receiveLastBytesRef.current = 0;
-      receiveLastTimeRef.current = 0;
-
       iceCandidatesQueueRef.current = [];
-      remoteDescriptionSetRef.current =
-        false;
+      remoteDescriptionSetRef.current = false;
 
       setDataChannelReady(false);
       setConnectionState("closed");
       setReceiveSpeed(0);
     };
-  }, [
-    roomId,
-    isSender,
-    setupDataChannel,
-  ]);
+  }, [roomId, isSender, setupDataChannel, resetReceiveState]);
 
-  const createOffer = useCallback(
-    async () => {
-      const peer = peerRef.current;
+  const createOffer = useCallback(async () => {
+    const peer = peerRef.current;
 
-      if (!peer || !isSender) return;
+    if (!peer || !isSender) return;
+    if (peer.signalingState !== "stable") return;
 
-      if (
-        peer.signalingState !==
-        "stable"
-      ) {
-        return;
-      }
+    try {
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
 
-      try {
-        const offer =
-          await peer.createOffer();
+      socket.emit("webrtc-offer", { roomId, offer });
+    } catch (error) {
+      console.error("Offer creation error:", error);
+    }
+  }, [roomId, isSender]);
 
-        await peer.setLocalDescription(
-          offer
-        );
+  const waitForBuffer = useCallback((channel) => {
+    if (channel.bufferedAmount <= LOW_WATER_MARK) {
+      return Promise.resolve();
+    }
 
-        socket.emit(
-          "webrtc-offer",
-          {
-            roomId,
-            offer,
-          }
-        );
-      } catch (error) {
-        console.error(
-          "Offer creation error:",
-          error
-        );
-      }
-    },
-    [roomId, isSender]
-  );
+    return new Promise((resolve, reject) => {
+      let finished = false;
 
-  const waitForBuffer = useCallback(
-    (channel) => {
-      if (
-        channel.bufferedAmount <=
-        LOW_WATER_MARK
-      ) {
-        return Promise.resolve();
-      }
+      const cleanup = () => {
+        channel.removeEventListener("bufferedamountlow", onLow);
+        channel.removeEventListener("close", onClose);
+        channel.removeEventListener("error", onError);
+      };
 
-      return new Promise(
-        (resolve, reject) => {
-          let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        resolve();
+      };
 
-          const cleanup = () => {
-            channel.removeEventListener(
-              "bufferedamountlow",
-              onLow
-            );
+      const fail = () => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        reject(new Error("Data channel closed while waiting"));
+      };
 
-            channel.removeEventListener(
-              "close",
-              onClose
-            );
-
-            channel.removeEventListener(
-              "error",
-              onError
-            );
-          };
-
-          const finish = () => {
-            if (finished) return;
-
-            finished = true;
-            cleanup();
-            resolve();
-          };
-
-          const fail = () => {
-            if (finished) return;
-
-            finished = true;
-            cleanup();
-
-            reject(
-              new Error(
-                "Data channel closed while waiting"
-              )
-            );
-          };
-
-          const onLow = () => {
-            if (
-              channel.bufferedAmount <=
-              LOW_WATER_MARK
-            ) {
-              finish();
-            }
-          };
-
-          const onClose = () => {
-            fail();
-          };
-
-          const onError = () => {
-            fail();
-          };
-
-          channel.addEventListener(
-            "bufferedamountlow",
-            onLow
-          );
-
-          channel.addEventListener(
-            "close",
-            onClose
-          );
-
-          channel.addEventListener(
-            "error",
-            onError
-          );
-
-          if (
-            channel.bufferedAmount <=
-            LOW_WATER_MARK
-          ) {
-            finish();
-          }
+      const onLow = () => {
+        if (channel.bufferedAmount <= LOW_WATER_MARK) {
+          finish();
         }
-      );
-    },
-    []
-  );
+      };
+
+      const onClose = () => fail();
+      const onError = () => fail();
+
+      channel.addEventListener("bufferedamountlow", onLow);
+      channel.addEventListener("close", onClose);
+      channel.addEventListener("error", onError);
+
+      if (channel.bufferedAmount <= LOW_WATER_MARK) {
+        finish();
+      }
+    });
+  }, []);
 
   const sendFile = useCallback(
     async (file) => {
-      const channel =
-        channelRef.current;
+      const channel = channelRef.current;
 
-      if (
-        !channel ||
-        channel.readyState !== "open"
-      ) {
-        throw new Error(
-          "Data channel is not ready"
-        );
+      if (!channel || channel.readyState !== "open") {
+        throw new Error("Data channel is not ready");
       }
 
       if (!file) {
-        throw new Error(
-          "No file selected"
-        );
+        throw new Error("No file selected");
       }
 
       setSendProgress(0);
@@ -605,99 +480,59 @@ const useWebRTC = ({ roomId, isSender }) => {
       setSendBytes(0);
       setSendElapsed(0);
 
-      const startTime =
-        performance.now();
+      sendHashChainRef.current = Promise.resolve(ZERO_HASH);
 
-      let lastUiUpdate =
-        startTime;
+      const startTime = performance.now();
+      let lastUiUpdate = startTime;
 
       channel.send(
         JSON.stringify({
           type: "file-start",
           name: file.name,
           size: file.size,
-          mimeType:
-            file.type ||
-            "application/octet-stream",
+          mimeType: file.type || "application/octet-stream",
         })
       );
 
       let offset = 0;
 
-      while (
-        offset < file.size
-      ) {
-        if (
-          channel.readyState !==
-          "open"
-        ) {
-          throw new Error(
-            "Data channel closed during transfer"
-          );
+      while (offset < file.size) {
+        if (channel.readyState !== "open") {
+          throw new Error("Data channel closed during transfer");
         }
 
-        const chunk =
-          file.slice(
-            offset,
-            offset + CHUNK_SIZE
-          );
-
-        const buffer =
-          await chunk.arrayBuffer();
+        const chunk = file.slice(offset, offset + CHUNK_SIZE);
+        const buffer = await chunk.arrayBuffer();
 
         while (
-          channel.bufferedAmount +
-            buffer.byteLength >
+          channel.bufferedAmount + buffer.byteLength >
           HIGH_WATER_MARK
         ) {
-          await waitForBuffer(
-            channel
-          );
+          await waitForBuffer(channel);
         }
 
-        if (
-          channel.readyState !==
-          "open"
-        ) {
-          throw new Error(
-            "Data channel closed during transfer"
-          );
+        if (channel.readyState !== "open") {
+          throw new Error("Data channel closed during transfer");
         }
 
         channel.send(buffer);
 
-        offset +=
-          buffer.byteLength;
+        sendHashChainRef.current = sendHashChainRef.current.then(
+          (prevHash) => chainHash(prevHash, buffer)
+        );
 
-        const now =
-          performance.now();
+        offset += buffer.byteLength;
 
-        if (
-          now - lastUiUpdate >=
-          100
-        ) {
-          const elapsed =
-            (now - startTime) /
-            1000;
+        const now = performance.now();
 
-          const speed =
-            elapsed > 0
-              ? offset / elapsed
-              : 0;
+        if (now - lastUiUpdate >= UI_UPDATE_INTERVAL_MS) {
+          const elapsed = (now - startTime) / 1000;
+          const speed = elapsed > 0 ? offset / elapsed : 0;
 
           setSendBytes(offset);
-
           setSendProgress(
-            Math.min(
-              100,
-              Math.round(
-                (offset /
-                  file.size) *
-                  100
-              )
-            )
+            Math.min(100, Math.round((offset / file.size) * 100))
           );
-
           setSendSpeed(speed);
           setSendElapsed(elapsed);
 
@@ -705,38 +540,26 @@ const useWebRTC = ({ roomId, isSender }) => {
         }
       }
 
-      if (
-        channel.readyState !==
-        "open"
-      ) {
-        throw new Error(
-          "Data channel closed before completion"
-        );
+      if (channel.readyState !== "open") {
+        throw new Error("Data channel closed before completion");
       }
+
+      const finalHash = await sendHashChainRef.current;
+      const finalHex = bytesToHex(finalHash);
 
       channel.send(
         JSON.stringify({
           type: "file-end",
+          hash: finalHex,
         })
       );
 
-      const totalElapsed =
-        (performance.now() -
-          startTime) /
-        1000;
+      const totalElapsed = (performance.now() - startTime) / 1000;
 
       setSendProgress(100);
       setSendBytes(file.size);
-      setSendElapsed(
-        totalElapsed
-      );
-
-      setSendSpeed(
-        totalElapsed > 0
-          ? file.size /
-            totalElapsed
-          : 0
-      );
+      setSendElapsed(totalElapsed);
+      setSendSpeed(totalElapsed > 0 ? file.size / totalElapsed : 0);
     },
     [waitForBuffer]
   );
@@ -749,6 +572,10 @@ const useWebRTC = ({ roomId, isSender }) => {
     receiveProgress,
     receiveSpeed,
     receivedFile,
+    receiveSavedToDisk,
+    receiveIntegrity,
+    canSaveToDisk,
+    chooseSaveDirectory,
     sendProgress,
     sendSpeed,
     sendBytes,
@@ -756,4 +583,4 @@ const useWebRTC = ({ roomId, isSender }) => {
   };
 };
 
-export default useWebRTC; 
+export default useWebRTC;
