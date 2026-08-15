@@ -9,8 +9,8 @@ import { socket } from "../services/socket";
 import { createPeerConnection } from "../services/peer";
 
 const CHUNK_SIZE = 64 * 1024;
-const HIGH_WATER_MARK = 16 * 1024 * 1024;
-const LOW_WATER_MARK = 4 * 1024 * 1024;
+const HIGH_WATER_MARK = 8 * 1024 * 1024;
+const LOW_WATER_MARK = 2 * 1024 * 1024;
 
 const useWebRTC = ({ roomId, isSender }) => {
   const peerRef = useRef(null);
@@ -60,6 +60,7 @@ const useWebRTC = ({ roomId, isSender }) => {
 
       channelRef.current = channel;
       channel.binaryType = "arraybuffer";
+
       channel.bufferedAmountLowThreshold =
         LOW_WATER_MARK;
 
@@ -71,7 +72,12 @@ const useWebRTC = ({ roomId, isSender }) => {
         setDataChannelReady(false);
       };
 
-      channel.onerror = () => {
+      channel.onerror = (error) => {
+        console.error(
+          "DataChannel error:",
+          error
+        );
+
         setDataChannelReady(false);
       };
 
@@ -151,11 +157,14 @@ const useWebRTC = ({ roomId, isSender }) => {
 
         if (data instanceof ArrayBuffer) {
           receiveChunksRef.current.push(data);
+
           receiveBytesRef.current +=
             data.byteLength;
         } else if (data instanceof Blob) {
           receiveChunksRef.current.push(data);
-          receiveBytesRef.current += data.size;
+
+          receiveBytesRef.current +=
+            data.size;
         } else {
           return;
         }
@@ -187,16 +196,19 @@ const useWebRTC = ({ roomId, isSender }) => {
           ) {
             receiveProgressTimerRef.current =
               setTimeout(() => {
-                const progress = Math.min(
-                  100,
-                  Math.round(
-                    (receiveBytesRef.current /
-                      fileInfo.size) *
-                      100
-                  )
-                );
+                const progress =
+                  Math.min(
+                    100,
+                    Math.round(
+                      (receiveBytesRef.current /
+                        fileInfo.size) *
+                        100
+                    )
+                  );
 
-                setReceiveProgress(progress);
+                setReceiveProgress(
+                  progress
+                );
 
                 receiveProgressTimerRef.current =
                   null;
@@ -214,7 +226,9 @@ const useWebRTC = ({ roomId, isSender }) => {
     remoteDescriptionSetRef.current = false;
     iceCandidatesQueueRef.current = [];
 
-    const handleOffer = async ({ offer }) => {
+    const handleOffer = async ({
+      offer,
+    }) => {
       if (isSender) return;
 
       try {
@@ -249,10 +263,13 @@ const useWebRTC = ({ roomId, isSender }) => {
           answer
         );
 
-        socket.emit("webrtc-answer", {
-          roomId,
-          answer,
-        });
+        socket.emit(
+          "webrtc-answer",
+          {
+            roomId,
+            answer,
+          }
+        );
       } catch (error) {
         console.error(
           "WebRTC offer error:",
@@ -261,7 +278,9 @@ const useWebRTC = ({ roomId, isSender }) => {
       }
     };
 
-    const handleAnswer = async ({ answer }) => {
+    const handleAnswer = async ({
+      answer,
+    }) => {
       if (!isSender) return;
 
       try {
@@ -337,17 +356,22 @@ const useWebRTC = ({ roomId, isSender }) => {
       handleIceCandidate
     );
 
-    const peer = createPeerConnection({
-      socket,
-      roomId,
-      isSender,
-      onDataChannel: (channel) => {
-        setupDataChannel(channel);
-      },
-      onConnectionStateChange: (state) => {
-        setConnectionState(state);
-      },
-    });
+    const peer =
+      createPeerConnection({
+        socket,
+        roomId,
+        isSender,
+
+        onDataChannel: (channel) => {
+          setupDataChannel(channel);
+        },
+
+        onConnectionStateChange: (
+          state
+        ) => {
+          setConnectionState(state);
+        },
+      });
 
     peerRef.current = peer;
 
@@ -405,6 +429,7 @@ const useWebRTC = ({ roomId, isSender }) => {
       receiveLastTimeRef.current = 0;
 
       iceCandidatesQueueRef.current = [];
+
       remoteDescriptionSetRef.current =
         false;
 
@@ -439,10 +464,13 @@ const useWebRTC = ({ roomId, isSender }) => {
           offer
         );
 
-        socket.emit("webrtc-offer", {
-          roomId,
-          offer,
-        });
+        socket.emit(
+          "webrtc-offer",
+          {
+            roomId,
+            offer,
+          }
+        );
       } catch (error) {
         console.error(
           "Offer creation error:",
@@ -454,51 +482,25 @@ const useWebRTC = ({ roomId, isSender }) => {
   );
 
   const waitForBuffer = useCallback(
-    (channel) => {
-      if (
-        channel.bufferedAmount <=
+    async (channel) => {
+      while (
+        channel.bufferedAmount >
         LOW_WATER_MARK
       ) {
-        return Promise.resolve();
-      }
-
-      return new Promise((resolve) => {
-        let finished = false;
-
-        const finish = () => {
-          if (finished) return;
-
-          finished = true;
-
-          channel.removeEventListener(
-            "bufferedamountlow",
-            onLow
+        if (
+          channel.readyState !==
+          "open"
+        ) {
+          throw new Error(
+            "Data channel closed while waiting"
           );
+        }
 
-          clearTimeout(timeout);
-
-          resolve();
-        };
-
-        const onLow = () => {
-          if (
-            channel.bufferedAmount <=
-            LOW_WATER_MARK
-          ) {
-            finish();
-          }
-        };
-
-        const timeout = setTimeout(
-          finish,
-          1000
+        await new Promise(
+          (resolve) =>
+            setTimeout(resolve, 20)
         );
-
-        channel.addEventListener(
-          "bufferedamountlow",
-          onLow
-        );
-      });
+      }
     },
     []
   );
@@ -510,7 +512,8 @@ const useWebRTC = ({ roomId, isSender }) => {
 
       if (
         !channel ||
-        channel.readyState !== "open"
+        channel.readyState !==
+          "open"
       ) {
         throw new Error(
           "Data channel is not ready"
@@ -528,7 +531,8 @@ const useWebRTC = ({ roomId, isSender }) => {
       setSendBytes(0);
       setSendElapsed(0);
 
-      const startTime = performance.now();
+      const startTime =
+        performance.now();
 
       channel.send(
         JSON.stringify({
@@ -543,33 +547,50 @@ const useWebRTC = ({ roomId, isSender }) => {
 
       let offset = 0;
 
-      while (offset < file.size) {
+      while (
+        offset < file.size
+      ) {
         if (
-          channel.bufferedAmount >=
-          HIGH_WATER_MARK
-        ) {
-          await waitForBuffer(channel);
-        }
-
-        if (
-          channel.readyState !== "open"
+          channel.readyState !==
+          "open"
         ) {
           throw new Error(
             "Data channel closed during transfer"
           );
         }
 
-        const chunk = file.slice(
-          offset,
-          offset + CHUNK_SIZE
-        );
+        const chunk =
+          file.slice(
+            offset,
+            offset + CHUNK_SIZE
+          );
 
         const buffer =
           await chunk.arrayBuffer();
 
+        while (
+          channel.bufferedAmount +
+            buffer.byteLength >
+          HIGH_WATER_MARK
+        ) {
+          await waitForBuffer(
+            channel
+          );
+        }
+
+        if (
+          channel.readyState !==
+          "open"
+        ) {
+          throw new Error(
+            "Data channel closed during transfer"
+          );
+        }
+
         channel.send(buffer);
 
-        offset += buffer.byteLength;
+        offset +=
+          buffer.byteLength;
 
         const elapsed =
           (performance.now() -
@@ -587,7 +608,8 @@ const useWebRTC = ({ roomId, isSender }) => {
           Math.min(
             100,
             Math.round(
-              (offset / file.size) *
+              (offset /
+                file.size) *
                 100
             )
           )
@@ -598,14 +620,19 @@ const useWebRTC = ({ roomId, isSender }) => {
       }
 
       if (
-        channel.readyState === "open"
+        channel.readyState !==
+        "open"
       ) {
-        channel.send(
-          JSON.stringify({
-            type: "file-end",
-          })
+        throw new Error(
+          "Data channel closed before completing transfer"
         );
       }
+
+      channel.send(
+        JSON.stringify({
+          type: "file-end",
+        })
+      );
 
       const totalElapsed =
         (performance.now() -
@@ -614,11 +641,14 @@ const useWebRTC = ({ roomId, isSender }) => {
 
       setSendProgress(100);
       setSendBytes(file.size);
-      setSendElapsed(totalElapsed);
+      setSendElapsed(
+        totalElapsed
+      );
 
       setSendSpeed(
         totalElapsed > 0
-          ? file.size / totalElapsed
+          ? file.size /
+            totalElapsed
           : 0
       );
     },
